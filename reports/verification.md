@@ -1,10 +1,10 @@
 # Verification — điền trước khi nộp
 
-- OS / Python / Gitleaks version:
-- `python -m pytest tests/ -q`:
-- `pre-commit run --all-files`:
+- OS / Python / Gitleaks version: Linux (WSL2) / Python 3.11.16 / Gitleaks v8.30.1
+- `python -m pytest tests/ -q`: 33 passed in 0.17s
+- `pre-commit run --all-files`: Passed (Detect hardcoded secrets: Passed)
 - Ledger verify: True
-- Các lỗi còn lại:
+- Các lỗi còn lại: Không có (0 errors)
 
 ## Checkpoint 3a — PII Detection Verification
 
