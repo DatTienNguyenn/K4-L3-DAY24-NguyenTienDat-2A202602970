@@ -34,7 +34,19 @@ không phải xác thực người dùng production.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+PRINCIPALS_PATH = Path(__file__).resolve().parent.parent / "data" / "principals.json"
+VALID_CLASSIFICATIONS = {"public", "internal", "restricted"}
+
+
+def _load_principals() -> dict:
+    if PRINCIPALS_PATH.exists():
+        return json.loads(PRINCIPALS_PATH.read_text(encoding="utf-8"))
+    return {}
 
 
 @dataclass(frozen=True)
@@ -52,4 +64,59 @@ class PolicyContext:
 
 
 def check(context: PolicyContext) -> tuple[bool, str]:
-    raise NotImplementedError("BƯỚC 3b: implement policy check")
+    """Kiểm tra chính sách bảo mật trước khi thực thi tool.
+
+    Trả về (allow, reason) với reason không bao giờ rỗng.
+    """
+    # 1. Kiểm tra data_classification hợp lệ
+    if context.data_classification not in VALID_CLASSIFICATIONS:
+        return False, f"Phân loại dữ liệu không hợp lệ: '{context.data_classification}'"
+
+    # 2. Rule tối thiểu bắt buộc: restricted + egress_enabled -> DENY tuyệt đối
+    if context.data_classification == "restricted" and context.egress_enabled is True:
+        return False, "Cấm tuyệt đối egress mạng đối với dữ liệu restricted"
+
+    # 3. Kiểm tra danh tính người ra lệnh (principal_id)
+    principals = _load_principals()
+    if not context.principal_id or context.principal_id not in principals:
+        return False, f"Unknown hoặc thiếu principal_id: '{context.principal_id}'"
+
+    principal = principals[context.principal_id]
+
+    # Kiểm tra thời hạn hiệu lực (expires_at)
+    if not context.expires_at:
+        return False, "Thiếu thời hạn hiệu lực (expires_at)"
+    try:
+        exp = datetime.fromisoformat(context.expires_at)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        if exp <= datetime.now(timezone.utc):
+            return False, f"Quyền ủy quyền đã hết hạn vào {context.expires_at}"
+    except Exception:
+        return False, f"Định dạng thời gian expires_at không hợp lệ: '{context.expires_at}'"
+
+    # Kiểm tra mục đích (request_purpose)
+    allowed_purposes = set(principal.get("purposes", []))
+    if context.request_purpose not in allowed_purposes:
+        return (
+            False,
+            f"Mục đích '{context.request_purpose}' không được phép cho principal '{context.principal_id}'",
+        )
+
+    # Kiểm tra quyền hiệu lực của tool (OBO effective scopes):
+    # quyền hiệu lực = principal.allowed_tools ∩ agent_scopes (∩ parent_scopes nếu delegation_depth > 0)
+    effective_tools = set(principal.get("allowed_tools", [])) & set(context.agent_scopes)
+    if context.delegation_depth > 0:
+        effective_tools &= set(context.parent_scopes)
+
+    if not context.requested_tool or context.requested_tool not in effective_tools:
+        return (
+            False,
+            f"Tool '{context.requested_tool}' không nằm trong quyền hiệu lực của principal '{context.principal_id}'",
+        )
+
+    # 4. Cho phép khi mọi điều kiện đều hợp lệ
+    return (
+        True,
+        f"Cho phép: principal '{context.principal_id}' có quyền gọi tool '{context.requested_tool}' cho mục đích '{context.request_purpose}'",
+    )

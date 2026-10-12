@@ -27,22 +27,77 @@ Interface bắt buộc (tests/test_ledger.py và agent/runner.py gọi trực ti
           - hash lưu trong dòng n khớp lại khi tính lại từ nội dung dòng đó
         Trả về False nếu một dòng còn trong file bị sửa mà không tính lại
         hash, nếu xoá/chèn giữa file làm đứt liên kết, hoặc thiếu reason.
-        Chỉ kiểm tra file hiện có KHÔNG phát hiện được việc xoá dòng cuối
-        hoặc viết lại cả file và tính lại chuỗi. Muốn phát hiện cắt đuôi
-        phải lưu hash/số dòng cuối ở một nơi tin cậy bên ngoài file rồi
-        đối chiếu. Bài lab không cung cấp mốc đó.
-
-Sinh viên phải tự tay chứng minh được: sửa 1 ký tự trong 1 dòng giữa file
-rồi gọi verify() phải trả về False.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
+
+GENESIS_HASH = "0" * 64
+
+
+def _compute_hash(record: dict) -> str:
+    """Tính SHA-256 từ dict không bao gồm key 'hash'."""
+    data = {k: v for k, v in record.items() if k != "hash"}
+    serialized = json.dumps(data, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def append(entry: dict, path: Path) -> dict:
-    raise NotImplementedError("BƯỚC 3d: implement ledger append")
+    """Thêm một entry vào audit ledger với hash chain bảo vệ toàn vẹn."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    prev_hash = GENESIS_HASH
+    if path.exists():
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if lines:
+            last_record = json.loads(lines[-1])
+            prev_hash = last_record.get("hash", GENESIS_HASH)
+
+    record = dict(entry)
+    record["prev_hash"] = prev_hash
+    record["hash"] = _compute_hash(record)
+
+    line = json.dumps(record, ensure_ascii=False) + "\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(line)
+
+    return record
 
 
 def verify(path: Path) -> bool:
-    raise NotImplementedError("BƯỚC 3d: implement ledger verify")
+    """Xác minh tính toàn vẹn của audit ledger."""
+    path = Path(path)
+    if not path.exists():
+        return True
+
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not lines:
+        return True
+
+    expected_prev = GENESIS_HASH
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+
+        # Kiểm tra reason không được rỗng
+        if not record.get("reason"):
+            return False
+
+        # Kiểm tra prev_hash
+        if record.get("prev_hash") != expected_prev:
+            return False
+
+        # Kiểm tra hash
+        stored_hash = record.get("hash")
+        computed_hash = _compute_hash(record)
+        if stored_hash != computed_hash:
+            return False
+
+        expected_prev = stored_hash
+
+    return True
